@@ -32,3 +32,27 @@ pub enum ClientCommand {
         destination: GridPosition,
     },
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnitState {
+    pub id: UnitId,
+    pub position: WorldPosition,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ServerMessage {
+    WorldSnapshot { units: Vec<UnitState> },
+    CommandRejected { rejection: CommandRejected },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandRejected {
+    EmptyUnitSelection,
+    UnitNotFound {
+        unit: UnitId,
+    },
+    NoPath {
+        start: GridPosition,
+        goal: GridPosition,
+    },
+}

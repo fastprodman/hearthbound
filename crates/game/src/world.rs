@@ -1,5 +1,5 @@
 use crate::{GameMap, GridPosition, UnitId, WorldPosition, find_path};
-use protocol::ClientCommand;
+use protocol::{ClientCommand, ServerMessage, UnitState};
 use std::{
     collections::{HashMap, VecDeque},
     time::Duration,
@@ -150,6 +150,21 @@ impl GameWorld {
         for unit in self.units.values_mut() {
             tick_unit(unit, delta);
         }
+    }
+
+    pub fn snapshot(&self) -> ServerMessage {
+        let mut units: Vec<UnitState> = self
+            .units
+            .values()
+            .map(|unit| UnitState {
+                id: unit.id,
+                position: unit.position,
+            })
+            .collect();
+
+        units.sort_by_key(|unit| unit.id.0);
+
+        ServerMessage::WorldSnapshot { units: units }
     }
 }
 
@@ -311,5 +326,31 @@ mod tests {
         );
 
         assert_eq!(world.unit(valid_id).unwrap().movement, None);
+    }
+
+    #[test]
+    fn snapshot_contains_authoritative_unit_state() {
+        let map = GameMap::new(8, 8, Terrain::Grass);
+        let mut world = GameWorld::new(map);
+
+        let first = world.spawn_unit(GridPosition::new(1, 2)).unwrap();
+
+        let second = world.spawn_unit(GridPosition::new(4, 5)).unwrap();
+
+        assert_eq!(
+            world.snapshot(),
+            ServerMessage::WorldSnapshot {
+                units: vec![
+                    UnitState {
+                        id: first,
+                        position: WorldPosition::new(1.0, 2.0),
+                    },
+                    UnitState {
+                        id: second,
+                        position: WorldPosition::new(4.0, 5.0),
+                    },
+                ],
+            }
+        );
     }
 }

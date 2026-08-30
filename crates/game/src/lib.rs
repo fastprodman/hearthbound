@@ -2,7 +2,7 @@ mod pathfinding;
 pub use pathfinding::find_path;
 
 mod world;
-pub use world::{GameWorld, MoveError, Movement, SERVER_TICK, SpawnError, Unit};
+pub use world::{CommandError, GameWorld, MoveError, Movement, SERVER_TICK, SpawnError, Unit};
 
 pub use protocol::{GridPosition, UnitId, WorldPosition};
 
@@ -80,6 +80,22 @@ impl GameMap {
     pub fn is_walkable(&self, position: GridPosition) -> bool {
         self.terrain(position) == Some(&Terrain::Grass)
     }
+
+    pub fn demo_8x8() -> Self {
+        let mut map = Self::new(8, 8, Terrain::Grass);
+
+        for position in [
+            GridPosition::new(3, 2),
+            GridPosition::new(4, 2),
+            GridPosition::new(3, 3),
+            GridPosition::new(4, 3),
+        ] {
+            map.set_terrain(position, Terrain::Water)
+                .expect("demo tile must be inside the map");
+        }
+
+        map
+    }
 }
 
 #[cfg(test)]
@@ -131,5 +147,15 @@ mod tests {
 
         assert!(!map.is_walkable(water_position));
         assert!(map.is_walkable(GridPosition::new(2, 2)));
+    }
+
+    #[test]
+    fn demo_map_is_8_by_8_and_contains_water() {
+        let map = GameMap::demo_8x8();
+
+        assert_eq!(map.width(), 8);
+        assert_eq!(map.height(), 8);
+
+        assert_eq!(map.terrain(GridPosition::new(3, 2)), Some(&Terrain::Water));
     }
 }
