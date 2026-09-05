@@ -31,12 +31,19 @@ pub enum ClientCommand {
         units: Vec<UnitId>,
         destination: GridPosition,
     },
+    Attack {
+        attackers: Vec<UnitId>,
+        unit: UnitId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnitState {
     pub id: UnitId,
+    pub owner: PlayerId,
     pub position: WorldPosition,
+    pub health: u32,
+    pub max_health: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -55,4 +62,13 @@ pub enum CommandRejected {
         start: GridPosition,
         goal: GridPosition,
     },
+    UnitNotOwned {
+        unit: UnitId,
+    },
+    FriendlyTarger {
+        unit: UnitId,
+    },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PlayerId(pub u64);

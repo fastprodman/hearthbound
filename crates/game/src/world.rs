@@ -1,5 +1,5 @@
 use crate::{GameMap, GridPosition, UnitId, WorldPosition, find_path};
-use protocol::{ClientCommand, ServerMessage, UnitState};
+use protocol::{ClientCommand, PlayerId, ServerMessage, UnitState};
 use std::{
     collections::{HashMap, VecDeque},
     time::Duration,
@@ -7,6 +7,13 @@ use std::{
 
 pub const SERVER_TICK: Duration = Duration::from_millis(50);
 const UNIT_SPEED: f32 = 2.0;
+pub const UNIT_MAX_HEALTH: u32 = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Health {
+    current: u32,
+    maximum: u32,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveError {
@@ -21,12 +28,27 @@ pub enum MoveError {
 pub enum CommandError {
     EmptyUnitSelection,
     Move(MoveError),
+    Attack(AttackError),
+    UnitNotOwned(UnitId),
 }
 
 impl From<MoveError> for CommandError {
     fn from(error: MoveError) -> Self {
         Self::Move(error)
     }
+}
+
+impl From<AttackError> for CommandError {
+    fn from(error: AttackError) -> Self {
+        Self::Attack(error)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttackError {
+    AttackerNotFound(UnitId),
+    TargetNotFound(UnitId),
+    FriendlyTarget(UnitId),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,8 +59,11 @@ pub struct Movement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Unit {
     pub id: UnitId,
+    pub owner: PlayerId,
     pub position: WorldPosition,
     pub movement: Option<Movement>,
+    pub health: Health,
+    pub attack_target: Option<UnitId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,7 +95,11 @@ impl GameWorld {
         self.units.get(&id)
     }
 
-    pub fn spawn_unit(&mut self, position: GridPosition) -> Result<UnitId, SpawnError> {
+    pub fn spawn_unit(
+        &mut self,
+        owner: PlayerId,
+        position: GridPosition,
+    ) -> Result<UnitId, SpawnError> {
         if !self.map.is_walkable(position) {
             return Err(SpawnError::PositionNotWalkable(position));
         }
@@ -84,8 +113,11 @@ impl GameWorld {
 
         let unit = Unit {
             id,
+            owner,
             position: WorldPosition::new(position.x as f32, position.y as f32),
             movement: None,
+            health: Health::new(UNIT_MAX_HEALTH),
+            attack_target: None,
         };
 
         self.units.insert(id, unit);
@@ -93,7 +125,11 @@ impl GameWorld {
         Ok(id)
     }
 
-    pub fn handle_command(&mut self, commnad: ClientCommand) -> Result<(), CommandError> {
+    pub fn handle_command(
+        &mut self,
+        owner: PlayerId,
+        commnad: ClientCommand,
+    ) -> Result<(), CommandError> {
         match commnad {
             ClientCommand::MoveUnits { units, destination } => {
                 if units.is_empty() {
@@ -104,7 +140,7 @@ impl GameWorld {
                 let mut planned_movements = Vec::with_capacity(units.len());
 
                 for id in units {
-                    let path = self.plan_move(id, destination)?;
+                    let path = self.plan_move(id, owner, destination)?;
                     planned_movements.push((id, path));
                 }
 
@@ -115,22 +151,82 @@ impl GameWorld {
 
                 Ok(())
             }
+            ClientCommand::Attack { attackers, unit } => self.handle_attack(owner, attackers, unit),
         }
+    }
+
+    fn handle_attack(
+        &mut self,
+        player: PlayerId,
+        attackers: Vec<UnitId>,
+        target_id: UnitId,
+    ) -> Result<(), CommandError> {
+        if attackers.is_empty() {
+            return Err(CommandError::EmptyUnitSelection);
+        }
+
+        for attacker_id in attackers.iter() {
+            let attacker = self
+                .units
+                .get(attacker_id)
+                .ok_or(AttackError::AttackerNotFound(*attacker_id))?;
+
+            if attacker.owner != player {
+                return Err(CommandError::UnitNotOwned(*attacker_id));
+            }
+
+            if attacker.health.is_dead() {
+                return Err(AttackError::AttackerNotFound(*attacker_id).into());
+            }
+        }
+
+        let target_unit = self
+            .units
+            .get(&target_id)
+            .ok_or(AttackError::TargetNotFound(target_id))?;
+
+        if target_unit.owner == player {
+            return Err(AttackError::FriendlyTarget(target_id).into());
+        }
+
+        if target_unit.health.is_dead() {
+            return Err(AttackError::TargetNotFound(target_id).into());
+        }
+
+        for attacker_id in attackers {
+            let attacker = self
+                .units
+                .get_mut(&attacker_id)
+                .expect("attacker was already validated");
+
+            attacker.attack_target = Some(target_id);
+
+            attacker.movement = None;
+        }
+
+        Ok(())
     }
 
     fn plan_move(
         &self,
         id: UnitId,
+        player: PlayerId,
         goal: GridPosition,
-    ) -> Result<VecDeque<GridPosition>, MoveError> {
+    ) -> Result<VecDeque<GridPosition>, CommandError> {
         let unit = self.units.get(&id).ok_or(MoveError::UnitNotFound(id))?;
+
+        if unit.owner != player {
+            return Err(CommandError::UnitNotOwned(id));
+        }
 
         let start = GridPosition::new(
             unit.position.x.round() as i32,
             unit.position.y.round() as i32,
         );
 
-        find_path(&self.map, start, goal).ok_or(MoveError::NoPath { start, goal })
+        let path = find_path(&self.map, start, goal).ok_or(MoveError::NoPath { start, goal })?;
+
+        Ok(path)
     }
 
     fn apply_movement(&mut self, id: UnitId, path: VecDeque<GridPosition>) {
@@ -158,13 +254,41 @@ impl GameWorld {
             .values()
             .map(|unit| UnitState {
                 id: unit.id,
+                owner: unit.owner,
                 position: unit.position,
+                health: unit.health.current(),
+                max_health: unit.health.maximum(),
             })
             .collect();
 
         units.sort_by_key(|unit| unit.id.0);
 
         ServerMessage::WorldSnapshot { units: units }
+    }
+}
+
+impl Health {
+    pub const fn new(maximum: u32) -> Self {
+        Self {
+            current: maximum,
+            maximum: maximum,
+        }
+    }
+
+    pub const fn current(&self) -> u32 {
+        self.current
+    }
+
+    pub const fn maximum(&self) -> u32 {
+        self.maximum
+    }
+
+    pub const fn is_dead(&self) -> bool {
+        self.current == 0
+    }
+
+    pub fn apply_damage(&mut self, amount: u32) {
+        self.current = self.current.saturating_sub(amount);
     }
 }
 
@@ -208,13 +332,16 @@ mod tests {
     use crate::Terrain;
     use protocol::ClientCommand;
 
+    const PLAYER: PlayerId = PlayerId(1);
+    const OTHER_PLAYER: PlayerId = PlayerId(2);
+
     #[test]
     fn spawns_a_unit_on_walkable_terrain() {
         let map = GameMap::new(8, 8, Terrain::Grass);
         let mut world = GameWorld::new(map);
 
         let id = world
-            .spawn_unit(GridPosition::new(2, 3))
+            .spawn_unit(PLAYER, GridPosition::new(2, 3))
             .expect("spawn position should be walkable");
 
         let unit = world.unit(id).expect("spawned unit should exist");
@@ -228,8 +355,8 @@ mod tests {
         let map = GameMap::new(8, 8, Terrain::Grass);
         let mut world = GameWorld::new(map);
 
-        let first = world.spawn_unit(GridPosition::new(1, 1)).unwrap();
-        let second = world.spawn_unit(GridPosition::new(2, 1)).unwrap();
+        let first = world.spawn_unit(PLAYER, GridPosition::new(1, 1)).unwrap();
+        let second = world.spawn_unit(PLAYER, GridPosition::new(2, 1)).unwrap();
 
         assert_ne!(first, second);
     }
@@ -244,7 +371,7 @@ mod tests {
         let mut world = GameWorld::new(map);
 
         assert_eq!(
-            world.spawn_unit(water),
+            world.spawn_unit(PLAYER, water),
             Err(SpawnError::PositionNotWalkable(water))
         );
     }
@@ -254,13 +381,16 @@ mod tests {
         let map = GameMap::new(8, 8, Terrain::Grass);
         let mut world = GameWorld::new(map);
 
-        let id = world.spawn_unit(GridPosition::new(0, 0)).unwrap();
+        let id = world.spawn_unit(PLAYER, GridPosition::new(0, 0)).unwrap();
 
         world
-            .handle_command(ClientCommand::MoveUnits {
-                units: vec![id],
-                destination: GridPosition::new(4, 3),
-            })
+            .handle_command(
+                PLAYER,
+                ClientCommand::MoveUnits {
+                    units: vec![id],
+                    destination: GridPosition::new(4, 3),
+                },
+            )
             .unwrap();
 
         for _ in 0..100 {
@@ -280,13 +410,16 @@ mod tests {
         map.set_terrain(water, Terrain::Water).unwrap();
 
         let mut world = GameWorld::new(map);
-        let id = world.spawn_unit(GridPosition::new(0, 0)).unwrap();
+        let id = world.spawn_unit(PLAYER, GridPosition::new(0, 0)).unwrap();
 
         assert_eq!(
-            world.handle_command(ClientCommand::MoveUnits {
-                units: vec![id],
-                destination: water,
-            }),
+            world.handle_command(
+                PLAYER,
+                ClientCommand::MoveUnits {
+                    units: vec![id],
+                    destination: water,
+                }
+            ),
             Err(CommandError::Move(MoveError::NoPath {
                 start: GridPosition::new(0, 0),
                 goal: water,
@@ -300,10 +433,13 @@ mod tests {
         let mut world = GameWorld::new(map);
 
         assert_eq!(
-            world.handle_command(ClientCommand::MoveUnits {
-                units: vec![],
-                destination: GridPosition::new(2, 2),
-            }),
+            world.handle_command(
+                PLAYER,
+                ClientCommand::MoveUnits {
+                    units: vec![],
+                    destination: GridPosition::new(2, 2),
+                }
+            ),
             Err(CommandError::EmptyUnitSelection)
         );
     }
@@ -313,15 +449,18 @@ mod tests {
         let map = GameMap::new(8, 8, Terrain::Grass);
         let mut world = GameWorld::new(map);
 
-        let valid_id = world.spawn_unit(GridPosition::new(0, 0)).unwrap();
+        let valid_id = world.spawn_unit(PLAYER, GridPosition::new(0, 0)).unwrap();
 
         let missing_id = UnitId(999);
 
         assert_eq!(
-            world.handle_command(ClientCommand::MoveUnits {
-                units: vec![valid_id, missing_id],
-                destination: GridPosition::new(4, 3),
-            }),
+            world.handle_command(
+                PLAYER,
+                ClientCommand::MoveUnits {
+                    units: vec![valid_id, missing_id],
+                    destination: GridPosition::new(4, 3),
+                }
+            ),
             Err(CommandError::Move(MoveError::UnitNotFound(missing_id)))
         );
 
@@ -333,9 +472,9 @@ mod tests {
         let map = GameMap::new(8, 8, Terrain::Grass);
         let mut world = GameWorld::new(map);
 
-        let first = world.spawn_unit(GridPosition::new(1, 2)).unwrap();
+        let first = world.spawn_unit(PLAYER, GridPosition::new(1, 2)).unwrap();
 
-        let second = world.spawn_unit(GridPosition::new(4, 5)).unwrap();
+        let second = world.spawn_unit(PLAYER, GridPosition::new(4, 5)).unwrap();
 
         assert_eq!(
             world.snapshot(),
@@ -343,14 +482,44 @@ mod tests {
                 units: vec![
                     UnitState {
                         id: first,
+                        owner: PLAYER,
                         position: WorldPosition::new(1.0, 2.0),
+                        health: UNIT_MAX_HEALTH,
+                        max_health: UNIT_MAX_HEALTH,
                     },
                     UnitState {
                         id: second,
+                        owner: PLAYER,
                         position: WorldPosition::new(4.0, 5.0),
+                        health: UNIT_MAX_HEALTH,
+                        max_health: UNIT_MAX_HEALTH,
                     },
                 ],
             }
         );
+    }
+
+    #[test]
+    fn new_unit_has_full_health() {
+        let map = GameMap::new(8, 8, Terrain::Grass);
+        let mut world = GameWorld::new(map);
+
+        let id = world.spawn_unit(PLAYER, GridPosition::new(1, 1)).unwrap();
+
+        let unit = world.unit(id).unwrap();
+
+        assert_eq!(unit.health.current(), UNIT_MAX_HEALTH);
+        assert_eq!(unit.health.maximum(), UNIT_MAX_HEALTH);
+        assert!(!unit.health.is_dead());
+    }
+
+    #[test]
+    fn damage_cannot_reduce_health_below_zero() {
+        let mut health = Health::new(100);
+
+        health.apply_damage(150);
+
+        assert_eq!(health.current(), 0);
+        assert!(health.is_dead());
     }
 }

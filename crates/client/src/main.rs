@@ -1,11 +1,14 @@
 use bevy::prelude::*;
 use client::{LocalConnection, ServerConnection};
-use game::{GameMap, GameWorld, GridPosition, Terrain};
-use protocol::{ServerMessage, UnitId, WorldPosition};
+use game::{GameMap, GameWorld, GridPosition, PlayerId, Terrain};
+use protocol::{ClientCommand, ServerMessage, UnitId, WorldPosition};
 use std::collections::{HashMap, HashSet};
 
 const TILE_WIDTH: f32 = 64.0;
 const TILE_HEIGHT: f32 = 32.0;
+const UNIT_PICK_RADIUS: f32 = 16.0;
+
+const LOCAL_PLAYER: PlayerId = PlayerId(1);
 
 #[derive(Component)]
 struct GameUnitId(UnitId);
@@ -15,6 +18,9 @@ struct ConnectionResource(LocalConnection);
 
 #[derive(Resource, Default)]
 struct RenderedUnitEntities(HashMap<UnitId, Entity>);
+
+#[derive(Resource, Default)]
+struct SelectedUnits(HashSet<UnitId>);
 
 fn main() {
     App::new()
@@ -33,7 +39,17 @@ fn main() {
         )
         .init_resource::<RenderedUnitEntities>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (update_connection, sync_server_messages).chain())
+        .add_systems(
+            Update,
+            (
+                select_unit,
+                send_move_command,
+                update_connection,
+                sync_server_messages,
+                draw_seleciton,
+            )
+                .chain(),
+        )
         .run();
 }
 
@@ -50,11 +66,24 @@ fn setup(
 
     let mut world = GameWorld::new(map);
 
-    world
-        .spawn_unit(GridPosition::new(1, 1))
+    let first_unit = world
+        .spawn_unit(LOCAL_PLAYER, GridPosition::new(1, 1))
         .expect("demo unit position should be walkable");
 
-    commands.insert_resource(ConnectionResource(LocalConnection::new(world)));
+    world
+        .spawn_unit(LOCAL_PLAYER, GridPosition::new(2, 1))
+        .expect("demo unit position should be walkable");
+
+    world
+        .spawn_unit(LOCAL_PLAYER, GridPosition::new(1, 2))
+        .expect("demo unit position should be walkable");
+
+    commands.insert_resource(SelectedUnits(HashSet::from([first_unit])));
+
+    commands.insert_resource(ConnectionResource(LocalConnection::new(
+        LOCAL_PLAYER,
+        world,
+    )));
 }
 
 fn update_connection(time: Res<Time>, mut connection: ResMut<ConnectionResource>) {
@@ -141,6 +170,105 @@ fn sync_server_messages(
     }
 }
 
+fn send_move_command(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    window: Single<&Window>,
+    camera: Single<(&Camera, &GlobalTransform)>,
+    selected_units: Res<SelectedUnits>,
+    mut connection: ResMut<ConnectionResource>,
+) {
+    if !mouse_buttons.just_pressed(MouseButton::Right) {
+        return;
+    }
+
+    let Some(cursor_position) = window.cursor_position() else {
+        return;
+    };
+
+    let (camera, camera_transform) = camera.into_inner();
+
+    let Ok(render_position) = camera.viewport_to_world_2d(camera_transform, cursor_position) else {
+        return;
+    };
+
+    let destination = bevy_to_grid(render_position);
+
+    let mut units: Vec<UnitId> = selected_units.0.iter().copied().collect();
+
+    if units.is_empty() {
+        return;
+    }
+
+    units.sort_by_key(|id| id.0);
+
+    connection
+        .0
+        .send(ClientCommand::MoveUnits { units, destination });
+}
+
+fn select_unit(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    window: Single<&Window>,
+    camera: Single<(&Camera, &GlobalTransform)>,
+    mut selected_units: ResMut<SelectedUnits>,
+    rendered_units: Query<(&GameUnitId, &GlobalTransform)>,
+) {
+    if !mouse_buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+
+    let Some(cursor_position) = window.cursor_position() else {
+        return;
+    };
+
+    let (camera, camera_transform) = camera.into_inner();
+
+    let Ok(cursor_world) = camera.viewport_to_world_2d(camera_transform, cursor_position) else {
+        return;
+    };
+
+    let mut nearest_unit: Option<(UnitId, f32)> = None;
+
+    for (game_unit_id, transform) in &rendered_units {
+        let unit_position = transform.translation().truncate();
+
+        let distance_squared = cursor_world.distance_squared(unit_position);
+
+        if distance_squared > UNIT_PICK_RADIUS.powi(2) {
+            continue;
+        }
+
+        let is_nearest =
+            nearest_unit.is_none_or(|(_, best_distance)| distance_squared < best_distance);
+
+        if is_nearest {
+            nearest_unit = Some((game_unit_id.0, distance_squared));
+        }
+    }
+
+    selected_units.0.clear();
+
+    if let Some((unit_id, _)) = nearest_unit {
+        selected_units.0.insert(unit_id);
+    }
+}
+
+fn draw_seleciton(
+    selected_units: Res<SelectedUnits>,
+    rendered_units: Query<(&GameUnitId, &GlobalTransform)>,
+    mut gizmos: Gizmos,
+) {
+    for (game_unit_id, transform) in &rendered_units {
+        if !selected_units.0.contains(&game_unit_id.0) {
+            continue;
+        }
+
+        let position = transform.translation().truncate();
+
+        gizmos.circle_2d(position, UNIT_PICK_RADIUS, Color::srgb(1.0, 0.9, 0.25));
+    }
+}
+
 fn unit_translation(position: WorldPosition) -> Vec3 {
     let render_position = world_to_bevy(position);
     let depth = 1.0 + (position.x + position.y) * 0.001;
@@ -195,4 +323,29 @@ fn world_to_bevy(position: WorldPosition) -> Vec2 {
         (position.x - position.y) * TILE_WIDTH * 0.5,
         -(position.x + position.y) * TILE_HEIGHT * 0.5,
     )
+}
+
+fn bevy_to_grid(position: Vec2) -> GridPosition {
+    let logical_x = position.x / TILE_WIDTH - position.y / TILE_HEIGHT;
+    let logical_y = -position.x / TILE_WIDTH - position.y / TILE_HEIGHT;
+
+    GridPosition::new(logical_x.round() as i32, logical_y.round() as i32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_position_survives_render_round_trip() {
+        for y in 0..8 {
+            for x in 0..8 {
+                let original = GridPosition::new(x, y);
+                let rendered = grid_to_bevy(original);
+                let converted = bevy_to_grid(rendered);
+
+                assert_eq!(converted, original);
+            }
+        }
+    }
 }

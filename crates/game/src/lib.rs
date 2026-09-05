@@ -2,9 +2,12 @@ mod pathfinding;
 pub use pathfinding::find_path;
 
 mod world;
-pub use world::{CommandError, GameWorld, MoveError, Movement, SERVER_TICK, SpawnError, Unit};
+pub use world::{
+    AttackError, CommandError, GameWorld, Health, MoveError, Movement, SERVER_TICK, SpawnError,
+    UNIT_MAX_HEALTH, Unit,
+};
 
-pub use protocol::{GridPosition, UnitId, WorldPosition};
+pub use protocol::{GridPosition, PlayerId, UnitId, WorldPosition};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Terrain {
