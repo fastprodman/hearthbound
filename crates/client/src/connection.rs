@@ -77,7 +77,7 @@ fn command_rejection(error: CommandError) -> CommandRejected {
             CommandRejected::UnitNotFound { unit }
         }
         CommandError::Attack(AttackError::FriendlyTarget(unit)) => {
-            CommandRejected::FriendlyTarger { unit }
+            CommandRejected::FriendlyTarget { unit }
         }
         CommandError::UnitNotOwned(unit) => CommandRejected::UnitNotOwned { unit },
     }
@@ -86,7 +86,7 @@ fn command_rejection(error: CommandError) -> CommandRejected {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use game::{GameMap, GridPosition, Terrain, UNIT_MAX_HEALTH};
+    use game::{GameMap, GridPosition, Terrain, DEFAULT_UNIT_STATS};
     use protocol::{ServerMessage, UnitState, WorldPosition};
 
     const PLAYER: PlayerId = PlayerId(1);
@@ -113,8 +113,8 @@ mod tests {
                     id,
                     owner: PLAYER,
                     position: WorldPosition::new(0.0, 0.0),
-                    health: UNIT_MAX_HEALTH,
-                    max_health: UNIT_MAX_HEALTH,
+                    health: DEFAULT_UNIT_STATS.base_max_health,
+                    max_health: DEFAULT_UNIT_STATS.base_max_health,
                 }],
             }]
         );
@@ -168,8 +168,8 @@ mod tests {
                     id,
                     owner: PLAYER,
                     position: WorldPosition::new(2.0, 0.0),
-                    health: UNIT_MAX_HEALTH,
-                    max_health: UNIT_MAX_HEALTH,
+                    health:  DEFAULT_UNIT_STATS.base_max_health,
+                    max_health:  DEFAULT_UNIT_STATS.base_max_health,
                 }],
             }
         );

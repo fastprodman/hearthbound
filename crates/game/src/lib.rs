@@ -3,8 +3,8 @@ pub use pathfinding::find_path;
 
 mod world;
 pub use world::{
-    AttackError, CommandError, GameWorld, Health, MoveError, Movement, SERVER_TICK, SpawnError,
-    UNIT_MAX_HEALTH, Unit,
+    AttackError, CommandError, GameEvent, GameWorld, Health, MoveError, Movement, SERVER_TICK, SpawnError,
+    Unit, UnitStats, DEFAULT_UNIT_STATS,
 };
 
 pub use protocol::{GridPosition, PlayerId, UnitId, WorldPosition};

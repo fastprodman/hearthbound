@@ -65,7 +65,7 @@ pub enum CommandRejected {
     UnitNotOwned {
         unit: UnitId,
     },
-    FriendlyTarger {
+    FriendlyTarget {
         unit: UnitId,
     },
 }
